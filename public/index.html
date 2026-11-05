@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Embeddedxplore2k26 – Certificate Portal | CKCET</title>
+<meta name="description" content="Download your Embeddedxplore2k26 participation and winner certificates. Embedded Systems & Smart Electronics Club, Dept. of ECE, CKCET.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="topbar"><div class="wrap">
+  <span><b>CKCET</b> · Department of Electronics & Communication Engineering</span>
+  <span>Embedded Systems & Smart Electronics Club</span>
+</div></div>
+
+<header class="hero"><div class="wrap">
+  <div class="brand">
+    <img src="logo.png" alt="CKCET logo" onerror="this.style.display='none'">
+    <div style="text-align:left">
+      <div class="college">CKCET</div>
+      <div class="dept">Dept. of ECE</div>
+    </div>
+  </div>
+  <span class="chip">Certificate Portal</span>
+  <h1>Embedded<span>xplore</span>2k26</h1>
+  <p class="club">Embedded Systems &amp; Smart Electronics Club</p>
+  <p class="sub">Participation &amp; Winner certificates — find yours and download in seconds.</p>
+</div></header>
+
+<main class="wrap main">
+
+  <!-- STEP 1: find certificate -->
+  <section class="card panel" id="find">
+    <h2>Get your certificate</h2>
+    <p class="desc">No sign-up needed. Enter your details exactly as you registered for the event.</p>
+    <form id="findForm" autocomplete="off">
+      <div class="grid">
+        <div class="field full">
+          <label for="name">Full name</label>
+          <input id="name" required minlength="3" maxlength="80" placeholder="e.g. Madhesh S">
+        </div>
+        <div class="field">
+          <label for="dept">Department</label>
+          <select id="dept" required>
+            <option value="">Select department</option>
+            <option>ECE</option><option>EEE</option><option>CSE</option><option>IT</option>
+            <option>AI &amp; DS</option><option>Mechanical</option><option>Civil</option>
+            <option>Biomedical</option><option>Other</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="year">Year</label>
+          <select id="year" required>
+            <option value="">Select year</option>
+            <option>I Year</option><option>II Year</option><option>III Year</option><option>IV Year</option>
+          </select>
+        </div>
+      </div>
+      <div class="actions">
+        <button class="btn" id="findBtn" type="submit">Find my certificate</button>
+      </div>
+      <div class="msg" id="findMsg"></div>
+    </form>
+    <div class="results" id="results"></div>
+  </section>
+
+  <!-- STEP 2: feedback -->
+  <section class="card panel" id="feedbackSec" style="margin-top:24px">
+    <h2>Share your feedback</h2>
+    <p class="desc">Tell us what you enjoyed and what we can improve. It helps us make the next edition even better.</p>
+    <form id="fbForm">
+      <div class="grid">
+        <div class="field">
+          <label for="fbName">Your name</label>
+          <input id="fbName" required maxlength="80" placeholder="Your full name">
+        </div>
+        <div class="field">
+          <label for="fbEvent">Event <small>(optional)</small></label>
+          <select id="fbEvent"><option value="Embeddedxplore2k26 (Overall)">Embeddedxplore2k26 (Overall)</option></select>
+        </div>
+        <div class="field full">
+          <label>Overall rating</label>
+          <div class="stars" id="stars">
+            <input type="radio" name="rating" id="r5" value="5"><label for="r5" title="Excellent">★</label>
+            <input type="radio" name="rating" id="r4" value="4"><label for="r4" title="Very good">★</label>
+            <input type="radio" name="rating" id="r3" value="3"><label for="r3" title="Good">★</label>
+            <input type="radio" name="rating" id="r2" value="2"><label for="r2" title="Fair">★</label>
+            <input type="radio" name="rating" id="r1" value="1"><label for="r1" title="Poor">★</label>
+          </div>
+          <div class="rate-text" id="rateText"></div>
+        </div>
+        <div class="field full">
+          <label for="liked">What did you like about the events?</label>
+          <textarea id="liked" maxlength="1000" placeholder="Workshops, coordination, hands-on activities, prizes…"></textarea>
+        </div>
+        <div class="field full">
+          <label for="improve">What can we improve?</label>
+          <textarea id="improve" maxlength="1000" placeholder="Timing, venue, event difficulty, certificate process, anything…"></textarea>
+        </div>
+        <div class="field full">
+          <label for="comments">Other comments / suggestions for next time <small>(optional)</small></label>
+          <textarea id="comments" maxlength="1000" placeholder="Event ideas, topics you'd like to see…"></textarea>
+        </div>
+      </div>
+      <div class="actions"><button class="btn navy" id="fbBtn" type="submit">Submit feedback</button></div>
+      <div class="msg" id="fbMsg"></div>
+    </form>
+  </section>
+</main>
+
+<footer>
+  <b>Embeddedxplore2k26</b> · Embedded Systems &amp; Smart Electronics Club · Dept. of ECE · <b>CKCET</b><br>
+  Can't find your certificate? Contact the club coordinators with your name and the event you attended.
+</footer>
+
+<!-- preview modal -->
+<div class="modal" id="modal">
+  <div class="box">
+    <div class="head">
+      <strong id="modalTitle">Certificate preview</strong>
+      <div class="row">
+        <a class="btn sm" id="modalDl" href="#">Download PDF</a>
+        <button class="btn sm ghost" id="modalClose" type="button">Close</button>
+      </div>
+    </div>
+    <iframe id="modalFrame" title="Certificate preview"></iframe>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function show(el, type, text){ el.className = 'msg show ' + type; el.textContent = text; }
+function hide(el){ el.className = 'msg'; }
+
+let who = { name:'', dept:'', year:'' };
+
+function certUrl(r, dl){
+  const base = `/api/cert/${r.id}/${r.page}`;
+  if(!dl) return base;
+  const q = new URLSearchParams({ dl:'1', n:who.name, d:who.dept, y:who.year });
+  return base + '?' + q.toString();
+}
+function badgeClass(c){ c=c.toLowerCase(); return c.includes('win') ? 'winner' : c.includes('particip') ? 'participation' : 'other'; }
+
+$('findForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  who = { name:$('name').value.trim(), dept:$('dept').value, year:$('year').value };
+  const btn = $('findBtn'); btn.disabled = true; btn.innerHTML = '<span class="spin"></span> Searching…';
+  hide($('findMsg')); $('results').innerHTML = '';
+  try{
+    const res = await fetch('/api/search?name=' + encodeURIComponent(who.name));
+    const data = await res.json();
+    if(!res.ok){ show($('findMsg'),'err',data.error || 'Something went wrong'); return; }
+    if(!data.length){
+      show($('findMsg'),'err','No certificate found for "' + who.name + '". Check the spelling (try just your first name + initial) or contact the club coordinators.');
+      return;
+    }
+    show($('findMsg'),'ok', data.length === 1 ? 'Certificate found!' : data.length + ' certificates found. Pick yours below.');
+    $('results').innerHTML = data.map((r,i) => `
+      <div class="cert">
+        <div class="info">
+          <div class="icon">🎓</div>
+          <div>
+            <h3>${esc(r.name || who.name)}</h3>
+            <div class="meta"><span class="badge ${badgeClass(r.category)}">${esc(r.category)}</span>${esc(r.event)}</div>
+          </div>
+        </div>
+        <div class="btns">
+          <button class="btn ghost sm" data-prev="${i}">Preview</button>
+          <a class="btn sm" data-dl="${i}" href="${certUrl(r,true)}">⬇ Download</a>
+        </div>
+      </div>`).join('');
+    $('results').querySelectorAll('[data-prev]').forEach(b => b.onclick = () => openPreview(data[+b.dataset.prev]));
+    $('results').querySelectorAll('[data-dl]').forEach(a => a.addEventListener('click', () => afterDownload(data[+a.dataset.dl])));
+  }catch(err){
+    show($('findMsg'),'err','Network error. Please try again.');
+  }finally{
+    btn.disabled = false; btn.textContent = 'Find my certificate';
+  }
+});
+
+function openPreview(r){
+  $('modalTitle').textContent = (r.name || who.name) + ' — ' + r.category;
+  $('modalFrame').src = certUrl(r,false) + '#toolbar=0&navpanes=0';
+  $('modalDl').href = certUrl(r,true);
+  $('modalDl').onclick = () => afterDownload(r);
+  $('modal').classList.add('show');
+}
+function closePreview(){ $('modal').classList.remove('show'); $('modalFrame').src = 'about:blank'; }
+$('modalClose').onclick = closePreview;
+$('modal').addEventListener('click', e => { if(e.target === $('modal')) closePreview(); });
+document.addEventListener('keydown', e => { if(e.key === 'Escape') closePreview(); });
+
+function afterDownload(r){
+  if(!$('fbName').value) $('fbName').value = who.name;
+  const opt = [...$('fbEvent').options].find(o => o.value === r.event);
+  if(opt) $('fbEvent').value = r.event;
+  closePreview();
+  setTimeout(() => { $('feedbackSec').scrollIntoView({behavior:'smooth', block:'start'}); }, 900);
+}
+
+// events list for feedback dropdown
+fetch('/api/events').then(r => r.json()).then(list => {
+  list.forEach(ev => { const o = document.createElement('option'); o.value = o.textContent = ev; $('fbEvent').appendChild(o); });
+}).catch(()=>{});
+
+// star text
+const labels = {1:'Poor',2:'Fair',3:'Good',4:'Very good',5:'Excellent'};
+document.querySelectorAll('input[name=rating]').forEach(i => i.addEventListener('change', () => $('rateText').textContent = labels[i.value]));
+
+$('fbForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  const rating = document.querySelector('input[name=rating]:checked');
+  if(!rating){ show($('fbMsg'),'err','Please select a star rating.'); return; }
+  const btn = $('fbBtn'); btn.disabled = true;
+  try{
+    const res = await fetch('/api/feedback', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        name:$('fbName').value, dept:who.dept, year:who.year, event:$('fbEvent').value,
+        rating:+rating.value, liked:$('liked').value, improve:$('improve').value, comments:$('comments').value
+      })
+    });
+    const data = await res.json();
+    if(!res.ok){ show($('fbMsg'),'err',data.error || 'Could not submit'); return; }
+    show($('fbMsg'),'ok','Thank you for your feedback! See you at the next Embeddedxplore. 🙌');
+    $('fbForm').reset(); $('rateText').textContent = '';
+    btn.textContent = 'Submitted ✓';
+  }catch(err){
+    show($('fbMsg'),'err','Network error. Please try again.');
+  }finally{ btn.disabled = false; setTimeout(()=>btn.textContent='Submit feedback', 3000); }
+});
+</script>
+</body>
+</html>

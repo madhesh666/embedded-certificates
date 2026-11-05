@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Admin Portal – Embeddedxplore2k26 | CKCET</title>
+<meta name="robots" content="noindex,nofollow">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="topbar"><div class="wrap">
+  <span><b>CKCET</b> · Dept. of ECE · Embedded Systems &amp; Smart Electronics Club</span>
+  <span><b>Embeddedxplore2k26</b> · Admin Portal</span>
+</div></div>
+
+<!-- LOGIN -->
+<div id="loginView" class="login-wrap" style="display:none">
+  <form class="card login" id="loginForm">
+    <div style="text-align:center;margin-bottom:18px">
+      <span class="chip" style="background:#e0f6f3;color:var(--teal-d);border-color:#b6e6e0">Admin Login</span>
+      <h2 style="margin-top:12px;color:var(--navy)">Embeddedxplore2k26</h2>
+      <p class="desc" style="margin:4px 0 0">Sign in to manage certificates &amp; feedback</p>
+    </div>
+    <div class="field" style="margin-bottom:14px">
+      <label for="u">Username</label>
+      <input id="u" required autocomplete="username">
+    </div>
+    <div class="field">
+      <label for="p">Password</label>
+      <input id="p" type="password" required autocomplete="current-password">
+    </div>
+    <button class="btn block" style="margin-top:20px" id="loginBtn" type="submit">Sign in</button>
+    <div class="msg" id="loginMsg"></div>
+    <p class="hint" style="text-align:center;margin-top:16px"><a href="/">← Back to student portal</a></p>
+  </form>
+</div>
+
+<!-- DASHBOARD -->
+<div id="dashView" class="wrap" style="display:none;padding-top:28px;padding-bottom:50px">
+  <div class="row" style="justify-content:space-between;margin-bottom:20px">
+    <div>
+      <h2 style="color:var(--navy)">Admin Dashboard</h2>
+      <p class="desc" style="margin:0">Upload certificate PDFs, manage entries, and review feedback.</p>
+    </div>
+    <div class="row">
+      <a class="btn ghost sm" href="/" target="_blank">Open student portal ↗</a>
+      <button class="btn danger sm" id="logoutBtn">Log out</button>
+    </div>
+  </div>
+
+  <div class="stats" id="stats"></div>
+
+  <div class="tabs">
+    <button class="tab active" data-tab="certs">Certificates</button>
+    <button class="tab" data-tab="feedback">Feedback</button>
+    <button class="tab" data-tab="downloads">Download log</button>
+  </div>
+
+  <!-- certificates -->
+  <section id="tab-certs">
+    <form class="card panel" id="uploadForm">
+      <h2>Upload certificate PDF</h2>
+      <p class="desc">Upload <b>one PDF with all certificates — one certificate per page</b>. Names are read automatically from each page so students can search by name. Upload separate PDFs for each event / category (e.g. Participation, Winner).</p>
+      <div class="grid">
+        <div class="field">
+          <label for="event">Event name</label>
+          <input id="event" required list="eventList" placeholder="e.g. Circuit Debugging / Paper Presentation">
+          <datalist id="eventList"></datalist>
+        </div>
+        <div class="field">
+          <label for="category">Certificate type</label>
+          <select id="category">
+            <option>Participation</option><option>Winner</option>
+            <option>Runner-up</option><option>Coordinator</option><option>Volunteer</option>
+          </select>
+        </div>
+        <div class="field full">
+          <label for="pdf">Certificates PDF</label>
+          <input id="pdf" type="file" accept="application/pdf,.pdf" required>
+          <div class="hint">Max 200 MB. Certificates must contain selectable text (not scanned images).</div>
+        </div>
+      </div>
+      <div class="actions"><button class="btn" id="uploadBtn" type="submit">Upload &amp; index certificates</button></div>
+      <div class="msg" id="uploadMsg"></div>
+    </form>
+
+    <h3 style="margin:28px 0 12px;color:var(--navy)">Uploaded batches</h3>
+    <div id="batches"></div>
+  </section>
+
+  <!-- feedback -->
+  <section id="tab-feedback" style="display:none">
+    <div class="row" style="justify-content:space-between;margin-bottom:12px">
+      <h3 style="color:var(--navy)">Student feedback</h3>
+      <a class="btn sm navy" href="/api/admin/feedback.csv">⬇ Export CSV</a>
+    </div>
+    <div class="tablebox"><table>
+      <thead><tr><th>Date</th><th>Student</th><th>Event</th><th>Rating</th><th>Liked</th><th>Improve</th><th>Comments</th></tr></thead>
+      <tbody id="fbBody"></tbody>
+    </table></div>
+  </section>
+
+  <!-- downloads -->
+  <section id="tab-downloads" style="display:none">
+    <h3 style="margin-bottom:12px;color:var(--navy)">Who downloaded what</h3>
+    <div class="tablebox"><table>
+      <thead><tr><th>Date</th><th>Typed name</th><th>Dept</th><th>Year</th><th>Event</th><th>Type</th><th>Certificate name</th></tr></thead>
+      <tbody id="dlBody"></tbody>
+    </table></div>
+  </section>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const fmt = d => new Date(d).toLocaleString('en-IN', { dateStyle:'medium', timeStyle:'short' });
+function show(el, type, text){ el.className = 'msg show ' + type; el.textContent = text; }
+function hide(el){ el.className = 'msg'; }
+
+async function api(url, opts){
+  const res = await fetch(url, opts);
+  if(res.status === 401 && !url.includes('login')){ showLogin(); throw new Error('auth'); }
+  const data = await res.json().catch(() => ({}));
+  if(!res.ok) throw new Error(data.error || 'Request failed');
+  return data;
+}
+
+function showLogin(){ $('dashView').style.display = 'none'; $('loginView').style.display = 'grid'; }
+function showDash(){ $('loginView').style.display = 'none'; $('dashView').style.display = 'block'; loadAll(); }
+
+(async () => {
+  try{ await api('/api/admin/me'); showDash(); } catch(e){ showLogin(); }
+})();
+
+$('loginForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  const btn = $('loginBtn'); btn.disabled = true; hide($('loginMsg'));
+  try{
+    await api('/api/admin/login', { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ username:$('u').value.trim(), password:$('p').value }) });
+    $('p').value = '';
+    showDash();
+  }catch(err){ show($('loginMsg'),'err',err.message); }
+  finally{ btn.disabled = false; }
+});
+$('logoutBtn').onclick = async () => { await fetch('/api/admin/logout', {method:'POST'}); showLogin(); };
+
+document.querySelectorAll('.tab').forEach(t => t.onclick = () => {
+  document.querySelectorAll('.tab').forEach(x => x.classList.toggle('active', x === t));
+  ['certs','feedback','downloads'].forEach(n => $('tab-'+n).style.display = n === t.dataset.tab ? 'block' : 'none');
+});
+
+function loadAll(){ loadStats(); loadBatches(); loadFeedback(); loadDownloads(); }
+
+async function loadStats(){
+  const s = await api('/api/admin/stats');
+  $('stats').innerHTML = [
+    [s.certificates,'Certificates indexed'],[s.batches,'PDF batches'],
+    [s.downloads,'Downloads'],[s.feedback,'Feedback received'],[s.avgRating ? s.avgRating + ' ★' : '–','Average rating']
+  ].map(([n,l]) => `<div class="card stat"><b>${n}</b><span>${l}</span></div>`).join('');
+}
+
+async function loadBatches(){
+  const list = await api('/api/admin/batches');
+  $('eventList').innerHTML = [...new Set(list.map(b => b.event))].map(e => `<option value="${esc(e)}">`).join('');
+  if(!list.length){ $('batches').innerHTML = '<div class="card empty">No certificates uploaded yet. Upload your first PDF above.</div>'; return; }
+  const open = new Set([...document.querySelectorAll('.batch.open')].map(x => x.dataset.id));
+  $('batches').innerHTML = list.map(b => `
+    <div class="batch ${open.has(b.id) ? 'open' : ''}" data-id="${b.id}">
+      <div class="bh">
+        <div>
+          <h3>${esc(b.event)} <span class="badge ${b.category.toLowerCase().includes('win') ? 'winner' : b.category.toLowerCase().includes('particip') ? 'participation' : 'other'}">${esc(b.category)}</span></h3>
+          <div class="meta">${esc(b.filename)} · ${b.pages.length} certificates · ${b.pages.filter(p=>p.name).length} names detected · uploaded ${fmt(b.uploadedAt)}</div>
+        </div>
+        <div class="row">
+          <button class="btn ghost sm" data-toggle>View / edit names</button>
+          <button class="btn ghost sm" data-edit>Rename</button>
+          <button class="btn danger sm" data-del>Delete</button>
+        </div>
+      </div>
+      <div class="pages"><table>
+        <thead><tr><th style="width:60px">Page</th><th style="width:260px">Name (searchable)</th><th>Text found on page</th><th style="width:150px"></th></tr></thead>
+        <tbody>${b.pages.map(p => `
+          <tr data-page="${p.page}">
+            <td>${p.page}</td>
+            <td><input value="${esc(p.name)}" placeholder="${p.snippet ? 'Type name…' : 'No text found – type name'}" maxlength="80"></td>
+            <td style="color:var(--muted);font-size:13px">${esc(p.snippet) || '<i>(no selectable text)</i>'}</td>
+            <td><button class="btn sm ghost" data-save>Save</button> <a class="btn sm ghost" target="_blank" href="/api/cert/${b.id}/${p.page}">View</a></td>
+          </tr>`).join('')}</tbody>
+      </table></div>
+    </div>`).join('');
+
+  document.querySelectorAll('.batch').forEach(el => {
+    const id = el.dataset.id, b = list.find(x => x.id === id);
+    el.querySelector('[data-toggle]').onclick = () => el.classList.toggle('open');
+    el.querySelector('[data-del]').onclick = async () => {
+      if(!confirm(`Delete "${b.event} – ${b.category}" and all ${b.pages.length} certificates?`)) return;
+      await api('/api/admin/batches/' + id, { method:'DELETE' }); loadAll();
+    };
+    el.querySelector('[data-edit]').onclick = async () => {
+      const ev = prompt('Event name:', b.event); if(ev === null) return;
+      const cat = prompt('Certificate type (Participation / Winner / …):', b.category); if(cat === null) return;
+      await api('/api/admin/batches/' + id, { method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ event:ev, category:cat }) });
+      loadAll();
+    };
+    el.querySelectorAll('[data-save]').forEach(btn => btn.onclick = async () => {
+      const tr = btn.closest('tr');
+      btn.textContent = '…';
+      try{
+        await api(`/api/admin/batches/${id}/page/${tr.dataset.page}`, { method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ name: tr.querySelector('input').value }) });
+        btn.textContent = 'Saved ✓'; setTimeout(() => btn.textContent = 'Save', 1500);
+      }catch(e){ btn.textContent = 'Error'; }
+    });
+  });
+}
+
+$('uploadForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  const btn = $('uploadBtn'); btn.disabled = true; btn.innerHTML = '<span class="spin"></span> Uploading & reading PDF…';
+  hide($('uploadMsg'));
+  const fd = new FormData();
+  fd.append('event', $('event').value); fd.append('category', $('category').value); fd.append('pdf', $('pdf').files[0]);
+  try{
+    const r = await api('/api/admin/upload', { method:'POST', body: fd });
+    let t = `Uploaded! ${r.pages} certificates indexed, ${r.namesDetected} names auto-detected.`;
+    if(r.pagesWithoutText) t += ` ${r.pagesWithoutText} page(s) had no selectable text — add their names manually below.`;
+    else if(r.namesDetected < r.pages) t += ' Students can still search by any text on the certificate; you can also type names manually below.';
+    show($('uploadMsg'), r.pagesWithoutText ? 'info' : 'ok', t);
+    $('uploadForm').reset(); loadAll();
+  }catch(err){ show($('uploadMsg'),'err',err.message); }
+  finally{ btn.disabled = false; btn.textContent = 'Upload & index certificates'; }
+});
+
+async function loadFeedback(){
+  const list = await api('/api/admin/feedback');
+  $('fbBody').innerHTML = list.length ? list.map(f => `
+    <tr>
+      <td style="white-space:nowrap">${fmt(f.at)}</td>
+      <td><b>${esc(f.name)}</b><div class="hint">${esc(f.dept)} ${esc(f.year)}</div></td>
+      <td>${esc(f.event)}</td>
+      <td class="stars-sm">${'★'.repeat(f.rating)}${'☆'.repeat(5 - f.rating)}</td>
+      <td>${esc(f.liked)}</td><td>${esc(f.improve)}</td><td>${esc(f.comments)}</td>
+    </tr>`).join('') : '<tr><td colspan="7" class="empty">No feedback yet.</td></tr>';
+}
+
+async function loadDownloads(){
+  const list = await api('/api/admin/downloads');
+  $('dlBody').innerHTML = list.length ? list.map(d => `
+    <tr><td style="white-space:nowrap">${fmt(d.at)}</td><td>${esc(d.name)}</td><td>${esc(d.dept)}</td><td>${esc(d.year)}</td>
+    <td>${esc(d.event)}</td><td>${esc(d.category)}</td><td>${esc(d.certName)}</td></tr>`).join('')
+    : '<tr><td colspan="7" class="empty">No downloads yet.</td></tr>';
+}
+</script>
+</body>
+</html>
