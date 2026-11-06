@@ -8,6 +8,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { PDFDocument } = require('pdf-lib');
+const supabase = require('./config/supabase');
 
 // ---------- CONFIG ----------
 const PORT = process.env.PORT || 3000;
@@ -124,16 +125,17 @@ app.post('/api/admin/logout', (req, res) => {
 
 app.get('/api/admin/me', requireAdmin, (req, res) => res.json({ ok: true }));
 
-// --- upload ---
+// --- upload ---//
+// --- Supabase PDF upload ---
 const upload = multer({
-  storage: multer.diskStorage({
-    destination: UPLOAD_DIR,
-    filename: (req, file, cb) => cb(null, uid() + '.pdf')
-  }),
+  storage: multer.memoryStorage(),
   limits: { fileSize: 200 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
-    if (file.mimetype === 'application/pdf' || /\.pdf$/i.test(file.originalname)) cb(null, true);
-    else cb(new Error('Only PDF files are allowed'));
+    if (file.mimetype === 'application/pdf' || /\.pdf$/i.test(file.originalname)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only PDF files are allowed'));
+    }
   }
 });
 
@@ -141,171 +143,550 @@ app.post('/api/admin/upload', requireAdmin, (req, res) => {
   upload.single('pdf')(req, res, async err => {
     if (err) return res.status(400).json({ error: err.message });
     if (!req.file) return res.status(400).json({ error: 'Please choose a PDF file' });
+
     const event = (req.body.event || '').trim();
     const category = (req.body.category || 'Participation').trim();
-    if (!event) { fs.unlink(req.file.path, () => {}); return res.status(400).json({ error: 'Event name is required' }); }
+
+    if (!event) {
+      return res.status(400).json({ error: 'Event name is required' });
+    }
+
+    const id = uid();
+    const storagePath = `${id}.pdf`;
+
     try {
-      const buf = fs.readFileSync(req.file.path);
+      const buf = req.file.buffer;
       const pages = await extractPages(buf);
-      const batch = {
-        id: path.basename(req.file.filename, '.pdf'),
-        event, category,
-        filename: req.file.originalname,
-        uploadedAt: new Date().toISOString(),
-        pages
-      };
-      db.batches.push(batch);
-      saveDb();
+
+      // Upload PDF to private Supabase Storage bucket
+      const { error: storageError } = await supabase.storage
+        .from('certificates')
+        .upload(storagePath, buf, {
+          contentType: 'application/pdf',
+          upsert: false
+        });
+
+      if (storageError) throw storageError;
+
+      // Save batch details in Supabase Database
+      const { error: batchError } = await supabase
+        .from('batches')
+        .insert({
+          id,
+          event,
+          category,
+          filename: req.file.originalname,
+          storage_path: storagePath
+        });
+
+      if (batchError) {
+        await supabase.storage.from('certificates').remove([storagePath]);
+        throw batchError;
+      }
+
+      // Save individual certificate pages
+      const certificateRows = pages.map(p => ({
+        batch_id: id,
+        page_number: p.page,
+        student_name: p.name || '',
+        extracted_text: p.text || ''
+      }));
+
+      if (certificateRows.length) {
+        const { error: pagesError } = await supabase
+          .from('certificates')
+          .insert(certificateRows);
+
+        if (pagesError) {
+          await supabase.from('batches').delete().eq('id', id);
+          await supabase.storage.from('certificates').remove([storagePath]);
+          throw pagesError;
+        }
+      }
+
       const named = pages.filter(p => p.name).length;
       const empty = pages.filter(p => !p.text.trim()).length;
-      res.json({ ok: true, id: batch.id, pages: pages.length, namesDetected: named, pagesWithoutText: empty });
+
+      res.json({
+        ok: true,
+        id,
+        pages: pages.length,
+        namesDetected: named,
+        pagesWithoutText: empty
+      });
+
     } catch (e) {
-      console.error(e);
-      fs.unlink(req.file.path, () => {});
-      res.status(400).json({ error: 'Could not read this PDF. Make sure it is a valid certificate PDF.' });
+      console.error('Supabase upload error:', e);
+      res.status(500).json({
+        error: 'Upload failed. Please check Supabase configuration and database permissions.'
+      });
     }
   });
 });
 
-app.get('/api/admin/batches', requireAdmin, (req, res) => {
-  res.json(db.batches.map(b => ({
-    id: b.id, event: b.event, category: b.category, filename: b.filename, uploadedAt: b.uploadedAt,
-    pages: b.pages.map(p => ({ page: p.page, name: p.name, snippet: p.text.replace(/\s+/g, ' ').slice(0, 140) }))
-  })));
-});
+app.get('/api/admin/batches', requireAdmin, async (req, res) => {
+  try {
+    const { data: batches, error: batchError } = await supabase
+      .from('batches')
+      .select('*')
+      .order('uploaded_at', { ascending: false });
 
-app.patch('/api/admin/batches/:id/page/:page', requireAdmin, (req, res) => {
-  const b = db.batches.find(x => x.id === req.params.id);
-  const p = b && b.pages.find(x => x.page === Number(req.params.page));
-  if (!p) return res.status(404).json({ error: 'Not found' });
-  p.name = String((req.body || {}).name || '').trim().slice(0, 80);
-  saveDb();
-  res.json({ ok: true });
-});
+    if (batchError) throw batchError;
 
-app.patch('/api/admin/batches/:id', requireAdmin, (req, res) => {
-  const b = db.batches.find(x => x.id === req.params.id);
-  if (!b) return res.status(404).json({ error: 'Not found' });
-  const { event, category } = req.body || {};
-  if (event && event.trim()) b.event = event.trim();
-  if (category && category.trim()) b.category = category.trim();
-  saveDb();
-  res.json({ ok: true });
-});
+    const { data: certificates, error: certError } = await supabase
+      .from('certificates')
+      .select('batch_id, page_number, student_name, extracted_text')
+      .order('page_number', { ascending: true });
 
-app.delete('/api/admin/batches/:id', requireAdmin, (req, res) => {
-  const i = db.batches.findIndex(x => x.id === req.params.id);
-  if (i < 0) return res.status(404).json({ error: 'Not found' });
-  const [b] = db.batches.splice(i, 1);
-  fs.unlink(path.join(UPLOAD_DIR, b.id + '.pdf'), () => {});
-  saveDb();
-  res.json({ ok: true });
-});
+    if (certError) throw certError;
 
-app.get('/api/admin/feedback', requireAdmin, (req, res) => res.json(db.feedback.slice().reverse()));
+    const result = batches.map(b => ({
+      id: b.id,
+      event: b.event,
+      category: b.category,
+      filename: b.filename,
+      uploadedAt: b.uploaded_at,
+      pages: certificates
+        .filter(p => p.batch_id === b.id)
+        .map(p => ({
+          page: p.page_number,
+          name: p.student_name || '',
+          snippet: (p.extracted_text || '').replace(/\s+/g, ' ').slice(0, 140)
+        }))
+    }));
 
-app.get('/api/admin/feedback.csv', requireAdmin, (req, res) => {
-  const q = v => '"' + String(v ?? '').replace(/"/g, '""') + '"';
-  const rows = [['Date', 'Name', 'Department', 'Year', 'Event', 'Rating', 'Liked', 'Improve', 'Comments']];
-  db.feedback.forEach(f => rows.push([f.at, f.name, f.dept, f.year, f.event, f.rating, f.liked, f.improve, f.comments]));
-  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-  res.setHeader('Content-Disposition', 'attachment; filename="embeddedxplore2k26-feedback.csv"');
-  res.send('﻿' + rows.map(r => r.map(q).join(',')).join('\n'));
-});
+    res.json(result);
 
-app.get('/api/admin/downloads', requireAdmin, (req, res) => res.json(db.downloads.slice().reverse()));
-
-app.get('/api/admin/stats', requireAdmin, (req, res) => {
-  const ratings = db.feedback.map(f => f.rating).filter(Boolean);
-  res.json({
-    batches: db.batches.length,
-    certificates: db.batches.reduce((n, b) => n + b.pages.length, 0),
-    downloads: db.downloads.length,
-    feedback: db.feedback.length,
-    avgRating: ratings.length ? +(ratings.reduce((a, b) => a + b, 0) / ratings.length).toFixed(2) : 0
-  });
-});
-
-// ---------- STUDENT API ----------
-app.get('/api/events', (req, res) => {
-  res.json([...new Set(db.batches.map(b => b.event))]);
-});
-
-app.get('/api/search', (req, res) => {
-  const q = norm(req.query.name);
-  const tokens = q.split(' ').filter(Boolean);
-  if (q.length < 3 || !tokens.some(t => t.length >= 3)) {
-    return res.status(400).json({ error: 'Please enter at least 3 letters of your name.' });
+  } catch (error) {
+    console.error('Admin batches error:', error);
+    res.status(500).json({ error: 'Could not load batches from database' });
   }
-  const regs = tokens.map(t => new RegExp('(^|[^a-z])' + esc(t)));
-  const results = [];
-  for (const b of db.batches) {
-    for (const p of b.pages) {
-      const hay = norm(p.name + ' ' + p.text);
+});
+app.patch('/api/admin/batches/:id/page/:page', requireAdmin, async (req, res) => {
+  try {
+    const pageNumber = Number(req.params.page);
+    const name = String((req.body || {}).name || '').trim().slice(0, 80);
+
+    const { data, error } = await supabase
+      .from('certificates')
+      .update({ student_name: name })
+      .eq('batch_id', req.params.id)
+      .eq('page_number', pageNumber)
+      .select('id');
+
+    if (error) throw error;
+
+    if (!data || data.length === 0) {
+      return res.status(404).json({ error: 'Not found' });
+    }
+
+    res.json({ ok: true });
+
+  } catch (error) {
+    console.error('Student name update error:', error);
+    res.status(500).json({ error: 'Could not update student name' });
+  }
+});
+app.patch('/api/admin/batches/:id', requireAdmin, async (req, res) => {
+  try {
+    const { event, category } = req.body || {};
+    const updates = {};
+
+    if (typeof event === 'string' && event.trim()) {
+      updates.event = event.trim();
+    }
+
+    if (typeof category === 'string' && category.trim()) {
+      updates.category = category.trim();
+    }
+
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ error: 'Nothing to update' });
+    }
+
+    const { data, error } = await supabase
+      .from('batches')
+      .update(updates)
+      .eq('id', req.params.id)
+      .select('id');
+
+    if (error) throw error;
+
+    if (!data || data.length === 0) {
+      return res.status(404).json({ error: 'Not found' });
+    }
+
+    res.json({ ok: true });
+
+  } catch (error) {
+    console.error('Batch update error:', error);
+    res.status(500).json({ error: 'Could not update batch' });
+  }
+});
+app.delete('/api/admin/batches/:id', requireAdmin, async (req, res) => {
+  try {
+    const { data: batch, error: findError } = await supabase
+      .from('batches')
+      .select('id, storage_path')
+      .eq('id', req.params.id)
+      .maybeSingle();
+
+    if (findError) throw findError;
+
+    if (!batch) {
+      return res.status(404).json({ error: 'Not found' });
+    }
+
+    // Delete PDF from Supabase Storage
+    const { error: storageError } = await supabase.storage
+      .from('certificates')
+      .remove([batch.storage_path]);
+
+    if (storageError) throw storageError;
+
+    // Delete batch; certificate rows are deleted by ON DELETE CASCADE
+    const { error: deleteError } = await supabase
+      .from('batches')
+      .delete()
+      .eq('id', req.params.id);
+
+    if (deleteError) throw deleteError;
+
+    res.json({ ok: true });
+
+  } catch (error) {
+    console.error('Batch delete error:', error);
+    res.status(500).json({ error: 'Could not delete batch' });
+  }
+});
+
+app.get('/api/admin/feedback', requireAdmin, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('feedback')
+      .select('*')
+      .order('submitted_at', { ascending: false });
+
+    if (error) throw error;
+
+    const result = data.map(f => ({
+      at: f.submitted_at,
+      name: f.name,
+      dept: f.department || '',
+      year: f.year || '',
+      event: f.event || '',
+      rating: f.rating,
+      liked: f.liked || '',
+      improve: f.improve || '',
+      comments: f.comments || ''
+    }));
+
+    res.json(result);
+
+  } catch (error) {
+    console.error('Feedback fetch error:', error);
+    res.status(500).json({ error: 'Could not load feedback' });
+  }
+});
+app.get('/api/admin/feedback.csv', requireAdmin, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('feedback')
+      .select('*')
+      .order('submitted_at', { ascending: false });
+
+    if (error) throw error;
+
+    const q = v => '"' + String(v ?? '').replace(/"/g, '""') + '"';
+
+    const rows = [
+      ['Date', 'Name', 'Department', 'Year', 'Event', 'Rating', 'Liked', 'Improve', 'Comments']
+    ];
+
+    data.forEach(f => rows.push([
+      f.submitted_at,
+      f.name,
+      f.department,
+      f.year,
+      f.event,
+      f.rating,
+      f.liked,
+      f.improve,
+      f.comments
+    ]));
+
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', 'attachment; filename="embeddedxplore2k26-feedback.csv"');
+    res.send('\uFEFF' + rows.map(r => r.map(q).join(',')).join('\n'));
+
+  } catch (error) {
+    console.error('Feedback CSV error:', error);
+    res.status(500).json({ error: 'Could not export feedback CSV' });
+  }
+});
+app.get('/api/admin/downloads', requireAdmin, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('downloads')
+      .select('*')
+      .order('downloaded_at', { ascending: false });
+
+    if (error) throw error;
+
+    const result = data.map(d => ({
+      at: d.downloaded_at,
+      name: d.name || '',
+      dept: d.department || '',
+      year: d.year || '',
+      event: d.event || '',
+      category: d.category || '',
+      certName: d.certificate_name || ''
+    }));
+
+    res.json(result);
+
+  } catch (error) {
+    console.error('Downloads fetch error:', error);
+    res.status(500).json({ error: 'Could not load download history' });
+  }
+});
+
+app.get('/api/admin/stats', requireAdmin, async (req, res) => {
+  try {
+    const [batches, certificates, downloads, feedback] = await Promise.all([
+      supabase.from('batches').select('id', { count: 'exact', head: true }),
+      supabase.from('certificates').select('id', { count: 'exact', head: true }),
+      supabase.from('downloads').select('id', { count: 'exact', head: true }),
+      supabase.from('feedback').select('rating')
+    ]);
+
+    if (batches.error) throw batches.error;
+    if (certificates.error) throw certificates.error;
+    if (downloads.error) throw downloads.error;
+    if (feedback.error) throw feedback.error;
+
+    const ratings = (feedback.data || [])
+      .map(f => Number(f.rating))
+      .filter(r => r >= 1 && r <= 5);
+
+    const avgRating = ratings.length
+      ? Number((ratings.reduce((a, b) => a + b, 0) / ratings.length).toFixed(2))
+      : 0;
+
+    res.json({
+      batches: batches.count || 0,
+      certificates: certificates.count || 0,
+      downloads: downloads.count || 0,
+      feedback: (feedback.data || []).length,
+      avgRating
+    });
+
+  } catch (error) {
+    console.error('Stats fetch error:', error);
+    res.status(500).json({ error: 'Could not load dashboard statistics' });
+  }
+});
+// ---------- STUDENT API ----------
+app.get('/api/events', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('batches')
+      .select('event')
+      .order('event', { ascending: true });
+
+    if (error) throw error;
+
+    const events = [...new Set(
+      (data || []).map(b => b.event).filter(Boolean)
+    )];
+
+    res.json(events);
+
+  } catch (error) {
+    console.error('Events fetch error:', error);
+    res.status(500).json({ error: 'Could not load events' });
+  }
+});
+
+app.get('/api/search', async (req, res) => {
+  try {
+    const q = norm(req.query.name);
+    const tokens = q.split(' ').filter(Boolean);
+
+    if (q.length < 3 || !tokens.some(t => t.length >= 3)) {
+      return res.status(400).json({
+        error: 'Please enter at least 3 letters of your name.'
+      });
+    }
+
+    const { data, error } = await supabase
+      .from('certificates')
+      .select(`
+        batch_id,
+        page_number,
+        student_name,
+        extracted_text,
+        batches!inner (
+          event,
+          category
+        )
+      `);
+
+    if (error) throw error;
+
+    const regs = tokens.map(t => new RegExp('(^|[^a-z])' + esc(t)));
+    const results = [];
+
+    for (const p of data || []) {
+      const hay = norm((p.student_name || '') + ' ' + (p.extracted_text || ''));
+
       if (regs.every(r => r.test(hay))) {
-        const nameN = norm(p.name);
+        const nameN = norm(p.student_name || '');
+
         results.push({
-          id: b.id, page: p.page, event: b.event, category: b.category,
-          name: p.name || '',
-          score: (nameN && nameN.includes(q) ? 2 : 0) + (nameN && regs.every(r => r.test(nameN)) ? 1 : 0)
+          id: p.batch_id,
+          page: p.page_number,
+          event: p.batches.event,
+          category: p.batches.category,
+          name: p.student_name || '',
+          score:
+            (nameN && nameN.includes(q) ? 2 : 0) +
+            (nameN && regs.every(r => r.test(nameN)) ? 1 : 0)
         });
       }
     }
-  }
-  results.sort((a, b) => b.score - a.score);
-  res.json(results.slice(0, 20).map(({ score, ...r }) => r));
-});
 
+    results.sort((a, b) => b.score - a.score);
+
+    res.json(results.slice(0, 20).map(({ score, ...r }) => r));
+
+  } catch (error) {
+    console.error('Certificate search error:', error);
+    res.status(500).json({ error: 'Certificate search failed' });
+  }
+});
+// ---------- CERTIFICATE PDF API ----------
 app.get('/api/cert/:id/:page', async (req, res) => {
-  const b = db.batches.find(x => x.id === req.params.id);
-  const pageNo = Number(req.params.page);
-  if (!b || !b.pages.find(p => p.page === pageNo)) return res.status(404).send('Certificate not found');
   try {
-    const src = await PDFDocument.load(fs.readFileSync(path.join(UPLOAD_DIR, b.id + '.pdf')), { ignoreEncryption: true });
-    const out = await PDFDocument.create();
-    const [pg] = await out.copyPages(src, [pageNo - 1]);
-    out.addPage(pg);
-    const bytes = Buffer.from(await out.save());
-    const p = b.pages.find(x => x.page === pageNo);
-    if (req.query.dl === '1') {
-      db.downloads.push({
-        at: new Date().toISOString(),
-        name: String(req.query.n || '').slice(0, 80),
-        dept: String(req.query.d || '').slice(0, 60),
-        year: String(req.query.y || '').slice(0, 20),
-        event: b.event, category: b.category, certName: p.name || ''
-      });
-      if (db.downloads.length > 20000) db.downloads.shift();
-      saveDb();
+    const pageNo = Number(req.params.page);
+
+    if (!Number.isInteger(pageNo) || pageNo < 1) {
+      return res.status(404).send('Certificate not found');
     }
-    const safe = (p.name || 'certificate').replace(/[^a-z0-9]+/gi, '_').replace(/^_|_$/g, '') || 'certificate';
-    const fname = `Embeddedxplore2k26_${b.category.replace(/[^a-z0-9]+/gi, '')}_${safe}.pdf`;
+
+    const { data: batch, error: batchError } = await supabase
+      .from('batches')
+      .select('id, event, category, storage_path')
+      .eq('id', req.params.id)
+      .maybeSingle();
+
+    if (batchError) throw batchError;
+    if (!batch) return res.status(404).send('Certificate not found');
+
+    const { data: certificate, error: certError } = await supabase
+      .from('certificates')
+      .select('page_number, student_name')
+      .eq('batch_id', batch.id)
+      .eq('page_number', pageNo)
+      .maybeSingle();
+
+    if (certError) throw certError;
+    if (!certificate) return res.status(404).send('Certificate not found');
+
+    const { data: pdfFile, error: storageError } = await supabase.storage
+      .from('certificates')
+      .download(batch.storage_path);
+
+    if (storageError) throw storageError;
+
+    const pdfBuffer = Buffer.from(await pdfFile.arrayBuffer());
+
+    const src = await PDFDocument.load(pdfBuffer, {
+      ignoreEncryption: true
+    });
+
+    if (pageNo > src.getPageCount()) {
+      return res.status(404).send('Certificate page not found');
+    }
+
+    const out = await PDFDocument.create();
+    const [page] = await out.copyPages(src, [pageNo - 1]);
+    out.addPage(page);
+
+    const bytes = Buffer.from(await out.save());
+
+    if (req.query.dl === '1') {
+      const { error: downloadError } = await supabase
+        .from('downloads')
+        .insert({
+          name: String(req.query.n || '').slice(0, 80),
+          department: String(req.query.d || '').slice(0, 60),
+          year: String(req.query.y || '').slice(0, 20),
+          event: batch.event,
+          category: batch.category,
+          certificate_name: certificate.student_name || '',
+          batch_id: batch.id,
+          page_number: pageNo
+        });
+
+      if (downloadError) throw downloadError;
+    }
+
+    const safe = (certificate.student_name || 'certificate')
+      .replace(/[^a-z0-9]+/gi, '_')
+      .replace(/^_|_$/g, '') || 'certificate';
+
+    const category = batch.category.replace(/[^a-z0-9]+/gi, '');
+    const filename = `Embeddedxplore2k26_${category}_${safe}.pdf`;
+
     res.setHeader('Content-Type', 'application/pdf');
-    res.setHeader('Content-Disposition', `${req.query.dl === '1' ? 'attachment' : 'inline'}; filename="${fname}"`);
+    res.setHeader(
+      'Content-Disposition',
+      `${req.query.dl === '1' ? 'attachment' : 'inline'}; filename="${filename}"`
+    );
+
     res.send(bytes);
-  } catch (e) {
-    console.error(e);
+
+  } catch (error) {
+    console.error('Certificate PDF error:', error);
     res.status(500).send('Could not generate certificate');
   }
 });
 
-app.post('/api/feedback', (req, res) => {
-  const b = req.body || {};
-  const clip = (v, n) => String(v || '').trim().slice(0, n);
-  const rating = Number(b.rating);
-  if (!clip(b.name, 80) || !(rating >= 1 && rating <= 5)) {
-    return res.status(400).json({ error: 'Name and a star rating are required.' });
-  }
-  db.feedback.push({
-    at: new Date().toISOString(),
-    name: clip(b.name, 80), dept: clip(b.dept, 60), year: clip(b.year, 20),
-    event: clip(b.event, 120), rating,
-    liked: clip(b.liked, 1000), improve: clip(b.improve, 1000), comments: clip(b.comments, 1000)
-  });
-  saveDb();
-  res.json({ ok: true });
-});
+app.post('/api/feedback', async (req, res) => {
+  try {
+    const b = req.body || {};
+    const clip = (v, n) => String(v || '').trim().slice(0, n);
+    const rating = Number(b.rating);
 
+    if (!clip(b.name, 80) || !(rating >= 1 && rating <= 5)) {
+      return res.status(400).json({
+        error: 'Name and a star rating are required.'
+      });
+    }
+
+    const { error } = await supabase
+      .from('feedback')
+      .insert({
+        name: clip(b.name, 80),
+        department: clip(b.dept, 60),
+        year: clip(b.year, 20),
+        event: clip(b.event, 120),
+        rating,
+        liked: clip(b.liked, 1000),
+        improve: clip(b.improve, 1000),
+        comments: clip(b.comments, 1000)
+      });
+
+    if (error) throw error;
+
+    res.json({ ok: true });
+
+  } catch (error) {
+    console.error('Feedback save error:', error);
+    res.status(500).json({ error: 'Could not save feedback' });
+  }
+});
 app.listen(PORT, () => {
   console.log(`\n  Embeddedxplore2k26 Certificate Portal`);
   console.log(`  Student page : http://localhost:${PORT}/`);
